@@ -1,12 +1,22 @@
-Summary:          Systemd-239
+%global _vpath_srcdir .
+%global _vpath_builddir %{_target_platform}
+%global __global_cflags  %{optflags}
+%global __global_cxxflags  %{optflags}
+%global __global_fflags  %{optflags} -I%_fmoddir
+%global __global_fcflags %{optflags} -I%_fmoddir
+%global __global_ldflags -Wl,-z,relro
+
 Name:             systemd
-Version:          239
-Release:          10%{?dist}
-License:          LGPLv2+ and GPLv2+ and MIT
 URL:              http://www.freedesktop.org/wiki/Software/systemd/
+Version:          243
+Release:          1%{?dist}
+License:          LGPLv2+ and GPLv2+ and MIT
+Summary:          System and Service Manager
+
 Group:            System Environment/Security
 Vendor:           VMware, Inc.
 Distribution:     Photon
+
 Source0:          %{name}-%{version}.tar.gz
 %define sha1      systemd=8803baa484cbe36680463c8c5e6febeff074b8e7
 Source1:          99-vmware-hotplug.rules
@@ -15,21 +25,6 @@ Source3:          systemd.cfg
 Source4:          99-dhcp-en.network
 Source5:          10-rdrand-rng.conf
 
-Patch0:           01-enoX-uses-instance-number-for-vmware-hv.patch
-Patch1:           02-install-general-aliases.patch
-Patch2:           systemd-239-default-dns-from-env.patch
-Patch3:           systemd-macros.patch
-Patch4:           systemd-239-query-duid.patch
-# Fix glibc-2.28 build issue. Checked in upstream after v239
-Patch5:           systemd-239-glibc-build-fix.patch
-Patch6:           systemd-239-revert-mtu.patch
-Patch7:           systemd-239-CVE-2018-15688.patch
-Patch8:           systemd-239-CVE-2018-15686.patch
-Patch9:           systemd-239-CVE-2018-15687.patch
-Patch10:          systemd-239-CVE-2018-16864.patch
-Patch11:          systemd-239-CVE-2018-16865.patch
-Patch12:          systemd-239-CVE-2018-16866.patch
-
 Requires:         Linux-PAM
 Requires:         libcap
 Requires:         xz
@@ -37,6 +32,12 @@ Requires:         kmod
 Requires:         glib
 Requires:         libgcrypt
 Requires:         filesystem >= 1.1
+Requires:         acl
+Requires:         audit
+Requires:         gnutls
+Requires:         lz4
+Requires:         libseccomp
+
 BuildRequires:    intltool
 BuildRequires:    gperf
 BuildRequires:    libcap-devel
@@ -54,14 +55,30 @@ BuildRequires:    meson
 BuildRequires:    gettext
 BuildRequires:    shadow
 BuildRequires:    libgcrypt-devel
+BuildRequires:    libseccomp-devel
+BuildRequires:    libacl-devel
+BuildRequires:    zlib-devel
+BuildRequires:    lz4-devel
 
 %description
-Systemd is an init replacement with better process control and security
+systemd is a system and service manager that runs as PID 1 and starts
+the rest of the system. It provides aggressive parallelization
+capabilities, uses socket and D-Bus activation for starting services,
+offers on-demand starting of daemons, keeps track of processes using
+Linux control groups, maintains mount and automount points, and
+implements an elaborate transactional dependency-based service control
+logic. systemd supports SysV and LSB init scripts and works as a
+replacement for sysvinit. Other parts of this package are a logging daemon,
+utilities to control basic system configuration like the hostname,
+date, locale, maintain a list of logged-in users, system accounts,
+runtime directories and settings, and daemons to manage simple network
+configuration, network time synchronization, log forwarding, and name
+resolution.
 
 %package devel
 Summary:        Development headers for systemd
 Requires:       %{name} = %{version}-%{release}
-Requires:    glib-devel
+Requires:       glib-devel
 
 %description devel
 Development headers for developing applications linking to libsystemd
@@ -74,69 +91,61 @@ Requires:       %{name} = %{version}-%{release}
 Language pack for systemd
 
 %prep
-%setup -q
-cat > config.cache << "EOF"
-KILL=/bin/kill
-HAVE_BLKID=1
-BLKID_LIBS="-lblkid"
-BLKID_CFLAGS="-I/usr/include/blkid"
-cc_cv_CFLAGS__flto=no
-EOF
-
-%patch0 -p1
-%patch1 -p1
-%patch2 -p1
-%patch3 -p1
-%patch4 -p1
-%patch5 -p1
-%patch6 -p1
-%patch7 -p1
-%patch8 -p1
-%patch9 -p1
-%patch10 -p1
-%patch11 -p1
-%patch12 -p1
+%setup -n %{name}-%{version}
 
 sed -i "s#\#DefaultTasksMax=512#DefaultTasksMax=infinity#g" src/core/system.conf.in
 
 %build
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
-meson  --prefix %{_prefix}                                            \
-       --sysconfdir /etc                                              \
-       --localstatedir /var                                           \
-       -Dblkid=true                                                   \
-       -Dbuildtype=release                                            \
-       -Ddefault-dnssec=no                                            \
-       -Dfirstboot=false                                              \
-       -Dinstall-tests=false                                          \
-       -Dldconfig=false                                               \
-       -Drootprefix=                                                  \
-       -Drootlibdir=/lib                                              \
-       -Dsplit-usr=true                                               \
-       -Dsysusers=false                                               \
-       -Dpam=true                                                     \
-       -Dpolkit=true                                                  \
-       -Ddbuspolicydir=/etc/dbus-1/system.d                           \
-       -Ddbussessionservicedir=%{_prefix}/share/dbus-1/services       \
-       -Ddbussystemservicedir=%{_prefix}/share/dbus-1/system-services \
-       -Dsysvinit-path=/etc/rc.d/init.d                               \
-       -Drc-local=/etc/rc.d/rc.local                                  \
-       $PWD build &&
-       cd build &&
-       %ninja_build
 
-%install
-cd build && %ninja_install
+CONFIGURE_OPTS=(
+       -Dkmod=true
+       -Dblkid=true
+       -Dseccomp=true
+       -Ddefault-dnssec=no
+       -Dfirstboot=false
+       -Dinstall-tests=false
+       -Dldconfig=false
+       -Dxz=true
+       -Dzlib=true
+       -Dlz4=true
+       -Dacl=true
+       -Dsmack=true
+       -Dgcrypt=true
+       -Daudit=true
+       -Dsplit-usr=true
+       -Dsysusers=false
+       -Dpam=true
+       -Dpolkit=true
+       -Dhwdb=true
+       -Ddefault-kill-user-processes=false
+       -Dtests=unsafe
+       -Dnobody-user=nobody
+       -Dnobody-group=nobody
+       -Dsplit-usr=false
+       -Dsplit-bin=true
+       -Db_lto=true
+       -Db_ndebug=false
+       -Ddefault-hierarchy=legacy
+       -Dsysvinit-path=/etc/rc.d/init.d
+       -Drc-local=/etc/rc.d/rc.local
+       -Dversion-tag=v%{version}-%{release}
+)
+
+%meson "${CONFIGURE_OPTS[@]}"
+%meson_build
+%meson_install
 
 install -vdm 755 %{buildroot}/sbin
 for tool in runlevel reboot shutdown poweroff halt telinit; do
      ln -sfv ../bin/systemctl %{buildroot}/sbin/${tool}
 done
+
 ln -sfv ../lib/systemd/systemd %{buildroot}/sbin/init
 sed -i '/srv/d' %{buildroot}/usr/lib/tmpfiles.d/home.conf
 sed -i "s:0775 root lock:0755 root root:g" %{buildroot}/usr/lib/tmpfiles.d/legacy.conf
-sed -i "s:NamePolicy=kernel database onboard slot path:NamePolicy=kernel database:g" %{buildroot}/lib/systemd/network/99-default.link
+sed -i "s:NamePolicy=kernel database onboard slot path:NamePolicy=kernel database:g" %{buildroot}/usr/lib/systemd/network/99-default.link
 sed -i "s:#LLMNR=yes:LLMNR=false:g" %{buildroot}/etc/systemd/resolved.conf
 rm -f %{buildroot}%{_var}/log/README
 mkdir -p %{buildroot}%{_localstatedir}/opt/journal/log
@@ -148,45 +157,58 @@ install -Dm 0644 %{SOURCE1} %{buildroot}/%{_sysconfdir}/udev/rules.d
 install -m 0644 %{SOURCE2} %{buildroot}%{_sysconfdir}/sysctl.d
 install -dm 0755 %{buildroot}/boot/
 install -m 0644 %{SOURCE3} %{buildroot}/boot/
-rm %{buildroot}/lib/systemd/system/default.target
-ln -sfv multi-user.target %{buildroot}/lib/systemd/system/default.target
 install -dm 0755 %{buildroot}/%{_sysconfdir}/systemd/network
 install -m 0644 %{SOURCE4} %{buildroot}/%{_sysconfdir}/systemd/network
+
+rm %{buildroot}/usr/lib/systemd/system/default.target
+ln -sfv multi-user.target %{buildroot}/usr/lib/systemd/system/default.target
+
 %ifarch x86_64
 install -m 0644 %{SOURCE5} %{buildroot}%{_sysconfdir}/modules-load.d
 %endif
 %find_lang %{name} ../%{name}.lang
 
 %post
-/sbin/ldconfig
+systemctl daemon-reexec &>/dev/null || :
+journalctl --update-catalog &>/dev/null || :
+systemd-tmpfiles --create &>/dev/null || :
+
+# Make sure new journal files will be owned by the "systemd-journal" group
+machine_id=$(cat /etc/machine-id 2>/dev/null)
+chgrp systemd-journal /{run,var}/log/journal/{,${machine_id}} &>/dev/null || :
+chmod g+s /{run,var}/log/journal/{,${machine_id}} &>/dev/null || :
+
+# Apply ACL to the journal directory
+setfacl -Rnm g:wheel:rx,d:g:wheel:rx,g:adm:rx,d:g:adm:rx /var/log/journal/ &>/dev/null || :
+
+udevadm hwdb --update &>/dev/null
+
+%{?ldconfig}
+
+%systemd_postun_with_restart systemd-udevd.service
+
 %postun
-/sbin/ldconfig
+%{?ldconfig}
+
 %clean
 rm -rf %{buildroot}/*
+
 %files
 %defattr(-,root,root)
 %dir %{_sysconfdir}/systemd
-%dir %{_sysconfdir}/systemd/system
 %dir %{_sysconfdir}/systemd/user
 %dir %{_sysconfdir}/systemd/network
 %dir %{_sysconfdir}/tmpfiles.d
 %dir %{_sysconfdir}/sysctl.d
 %dir %{_sysconfdir}/modules-load.d
 %dir %{_sysconfdir}/binfmt.d
+
 %{_sysconfdir}/X11/xinit/xinitrc.d/50-systemd-user.sh
 %{_sysconfdir}/sysctl.d/50-security-hardening.conf
 %{_sysconfdir}/xdg/systemd
 %{_sysconfdir}/rc.d/init.d/README
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.systemd1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.hostname1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.login1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.locale1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.timedate1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.resolve1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.network1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.machine1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.portable1.conf
-%config(noreplace) %{_sysconfdir}/dbus-1/system.d/org.freedesktop.timesync1.conf
+%{_sysconfdir}/systemd/sleep.conf
+
 %config(noreplace) %{_sysconfdir}/systemd/system.conf
 %config(noreplace) %{_sysconfdir}/systemd/user.conf
 %config(noreplace) %{_sysconfdir}/systemd/logind.conf
@@ -194,7 +216,10 @@ rm -rf %{buildroot}/*
 %config(noreplace) %{_sysconfdir}/systemd/resolved.conf
 %config(noreplace) %{_sysconfdir}/systemd/coredump.conf
 %config(noreplace) %{_sysconfdir}/systemd/timesyncd.conf
+%config(noreplace) %{_sysconfdir}/systemd/networkd.conf
+%config(noreplace) %{_sysconfdir}/systemd/pstore.conf
 %config(noreplace) %{_sysconfdir}/pam.d/systemd-user
+
 %ifarch x86_64
 %config(noreplace) %{_sysconfdir}/modules-load.d/10-rdrand-rng.conf
 %endif
@@ -203,65 +228,53 @@ rm -rf %{buildroot}/*
 %dir %{_sysconfdir}/udev
 %dir %{_sysconfdir}/udev/rules.d
 %dir %{_sysconfdir}/udev/hwdb.d
+
 %{_sysconfdir}/udev/rules.d/99-vmware-hotplug.rules
 %config(noreplace) %{_sysconfdir}/udev/udev.conf
 %config(noreplace) /boot/systemd.cfg
-%{_sysconfdir}/systemd/system/*
-/lib/udev/*
-/lib/systemd/systemd*
-/lib/systemd/system-*
-/lib/systemd/system/*
-/lib/systemd/network/80-container*
-/lib/systemd/*.so
-/lib/systemd/resolv.conf
-/lib/systemd/portablectl
-%config(noreplace) /lib/systemd/network/99-default.link
-%config(noreplace) /lib/systemd/portable/profile/default/service.conf
-%config(noreplace) /lib/systemd/portable/profile/nonetwork/service.conf
-%config(noreplace) /lib/systemd/portable/profile/strict/service.conf
-%config(noreplace) /lib/systemd/portable/profile/trusted/service.conf
+
 %{_libdir}/environment.d/99-environment.conf
-%exclude %{_libdir}/debug
 %exclude %{_datadir}/locale
 %{_libdir}/binfmt.d
 %{_libdir}/kernel
 %{_libdir}/modules-load.d
 %{_libdir}/rpm
-/lib/security
+%{_libdir}/*.so*
 %{_libdir}/sysctl.d
 %{_libdir}/systemd
 %{_libdir}/tmpfiles.d
-/lib/*.so*
-/lib/modprobe.d/systemd.conf
+%{_libdir}/udev
+%{_libdir}/security/pam_systemd.so
+%{_libdir}/modprobe.d/systemd.conf
 %{_bindir}/*
-/bin/*
+%{_sbindir}/*
 /sbin/*
+
 %{_datadir}/bash-completion/*
 %{_datadir}/factory/*
 %{_datadir}/dbus-1
 %{_datadir}/doc/*
-%{_mandir}/man[1578]/*
 %{_datadir}/polkit-1
 %{_datadir}/systemd
 %{_datadir}/zsh/*
-%dir %{_localstatedir}/opt/journal/log
 %{_localstatedir}/log/journal
 
 %files devel
 %dir %{_includedir}/systemd
-/lib/libudev.so
-/lib/libsystemd.so
+%{_libdir}/libudev.so
+%{_libdir}/libsystemd.so
 %{_includedir}/systemd/*.h
 %{_includedir}/libudev.h
 %{_libdir}/pkgconfig/libudev.pc
 %{_libdir}/pkgconfig/libsystemd.pc
 %{_datadir}/pkgconfig/systemd.pc
 %{_datadir}/pkgconfig/udev.pc
-%{_mandir}/man3/*
 
-%files lang -f %{name}.lang
+%files lang -f ../%{name}.lang
 
 %changelog
+*    Fri Sep 06 2019 Susant Sahani <ssahani@vmware.com>  243-1
+-    Update to version 243
 *    Thu Jan 10 2019 Anish Swaminathan <anishs@vmware.com>  239-10
 -    Fix CVE-2018-16864, CVE-2018-16865, CVE-2018-16866
 *    Wed Jan 09 2019 Keerthana K <keerthanak@vmware.com> 239-9
