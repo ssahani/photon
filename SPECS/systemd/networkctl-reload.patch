@@ -1,0 +1,1393 @@
+diff -rupN systemd-239/src/basic/def.h systemd-239-network-reload/src/basic/def.h
+--- systemd-239/src/basic/def.h	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/basic/def.h	2020-02-13 10:16:50.000000000 +0100
+@@ -66,12 +66,20 @@
+         "/usr/lib/" n "\0"                      \
+         _CONF_PATHS_SPLIT_USR_NULSTR(n)
+ 
++#define CONF_PATHS_USR(n)                       \
++        "/etc/" n,                              \
++        "/run/" n,                              \
++        "/usr/local/lib/" n,                    \
++        "/usr/lib/" n
++
++#define CONF_PATHS(n)                           \
++        CONF_PATHS_USR(n)                       \
++        _CONF_PATHS_SPLIT_USR(n)
++
++#define CONF_PATHS_USR_STRV(n)                  \
++        STRV_MAKE(CONF_PATHS_USR(n))
++
+ #define CONF_PATHS_STRV(n)                      \
+-        STRV_MAKE(                              \
+-                "/etc/" n,                      \
+-                "/run/" n,                      \
+-                "/usr/local/lib/" n,            \
+-                "/usr/lib/" n                   \
+-                _CONF_PATHS_SPLIT_USR(n))
++        STRV_MAKE(CONF_PATHS(n))
+ 
+ #define LONG_LINE_MAX (1U*1024U*1024U)
+diff -rupN systemd-239/src/basic/macro.h systemd-239-network-reload/src/basic/macro.h
+--- systemd-239/src/basic/macro.h	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/basic/macro.h	2020-02-13 10:33:47.000000000 +0100
+@@ -417,10 +417,57 @@ static inline unsigned long ALIGN_POWER2
+ #endif
+ #endif
+ 
++#define DEFINE_TRIVIAL_DESTRUCTOR(name, type, func)             \
++        static inline void name(type *p) {                      \
++                func(p);                                        \
++        }
++
+ #define DEFINE_TRIVIAL_CLEANUP_FUNC(type, func)                 \
+         static inline void func##p(type *p) {                   \
+                 if (*p)                                         \
+                         func(*p);                               \
+         }
+ 
++
++#define _DEFINE_TRIVIAL_REF_FUNC(type, name, scope)             \
++        scope type *name##_ref(type *p) {                       \
++                if (!p)                                         \
++                        return NULL;                            \
++                                                                \
++                assert(p->n_ref > 0);                           \
++                p->n_ref++;                                     \
++                return p;                                       \
++        }
++
++#define _DEFINE_TRIVIAL_UNREF_FUNC(type, name, free_func, scope) \
++        scope type *name##_unref(type *p) {                      \
++                if (!p)                                          \
++                        return NULL;                             \
++                                                                 \
++                assert(p->n_ref > 0);                            \
++                p->n_ref--;                                      \
++                if (p->n_ref > 0)                                \
++                        return NULL;                             \
++                                                                 \
++                return free_func(p);                             \
++        }
++
++#define DEFINE_TRIVIAL_REF_FUNC(type, name)     \
++        _DEFINE_TRIVIAL_REF_FUNC(type, name,)
++#define DEFINE_PRIVATE_TRIVIAL_REF_FUNC(type, name)     \
++        _DEFINE_TRIVIAL_REF_FUNC(type, name, static)
++#define DEFINE_PUBLIC_TRIVIAL_REF_FUNC(type, name)      \
++        _DEFINE_TRIVIAL_REF_FUNC(type, name, _public_)
++
++#define DEFINE_TRIVIAL_UNREF_FUNC(type, name, free_func)        \
++        _DEFINE_TRIVIAL_UNREF_FUNC(type, name, free_func,)
++#define DEFINE_PRIVATE_TRIVIAL_UNREF_FUNC(type, name, free_func)        \
++        _DEFINE_TRIVIAL_UNREF_FUNC(type, name, free_func, static)
++#define DEFINE_PUBLIC_TRIVIAL_UNREF_FUNC(type, name, free_func)         \
++        _DEFINE_TRIVIAL_UNREF_FUNC(type, name, free_func, _public_)
++
++#define DEFINE_TRIVIAL_REF_UNREF_FUNC(type, name, free_func)    \
++        DEFINE_TRIVIAL_REF_FUNC(type, name);                    \
++        DEFINE_TRIVIAL_UNREF_FUNC(type, name, free_func);
++
+ #include "log.h"
+diff -rupN systemd-239/src/libsystemd-network/network-internal.h systemd-239-network-reload/src/libsystemd-network/network-internal.h
+--- systemd-239/src/libsystemd-network/network-internal.h	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/libsystemd-network/network-internal.h	2020-02-13 10:16:05.000000000 +0100
+@@ -8,6 +8,7 @@
+ 
+ #include "condition.h"
+ #include "conf-parser.h"
++#include "def.h"
+ #include "set.h"
+ #include "udev.h"
+ 
+@@ -56,3 +57,5 @@ int deserialize_dhcp_routes(struct sd_dh
+ 
+ /* It is not necessary to add deserialize_dhcp_option(). Use unhexmem() instead. */
+ int serialize_dhcp_option(FILE *f, const char *key, const void *data, size_t size);
++
++#define NETWORK_DIRS ((const char* const*) CONF_PATHS_STRV("systemd/network"))
+diff -rupN systemd-239/src/network/meson.build systemd-239-network-reload/src/network/meson.build
+--- systemd-239/src/network/meson.build	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/meson.build	2020-02-12 11:13:14.000000000 +0100
+@@ -122,6 +122,8 @@ if conf.get('ENABLE_NETWORKD') == 1
+                      install_dir : dbuspolicydir)
+         install_data('org.freedesktop.network1.service',
+                      install_dir : dbussystemservicedir)
++        install_data('org.freedesktop.network1.policy',
++                     install_dir : polkitpolicydir)
+         if install_polkit
+                 install_data('systemd-networkd.rules',
+                              install_dir : polkitrulesdir)
+diff -rupN systemd-239/src/network/netdev/netdev.c systemd-239-network-reload/src/network/netdev/netdev.c
+--- systemd-239/src/network/netdev/netdev.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/netdev/netdev.c	2020-02-08 12:26:48.000000000 +0100
+@@ -756,7 +756,7 @@ static int netdev_load_one(Manager *mana
+         return 0;
+ }
+ 
+-int netdev_load(Manager *manager) {
++int netdev_load(Manager *manager, bool reload) {
+         _cleanup_strv_free_ char **files = NULL;
+         NetDev *netdev;
+         char **f;
+@@ -764,8 +764,9 @@ int netdev_load(Manager *manager) {
+ 
+         assert(manager);
+ 
+-        while ((netdev = hashmap_first(manager->netdevs)))
+-                netdev_unref(netdev);
++        if (!reload)
++                while ((netdev = hashmap_first(manager->netdevs)))
++                        netdev_unref(netdev);
+ 
+         r = conf_files_list_strv(&files, ".netdev", NULL, 0, network_dirs);
+         if (r < 0)
+diff -rupN systemd-239/src/network/netdev/netdev.h systemd-239-network-reload/src/network/netdev/netdev.h
+--- systemd-239/src/network/netdev/netdev.h	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/netdev/netdev.h	2020-02-08 12:27:34.000000000 +0100
+@@ -145,7 +145,7 @@ extern const NetDevVTable * const netdev
+ /* For casting the various netdev kinds into a netdev */
+ #define NETDEV(n) (&(n)->meta)
+ 
+-int netdev_load(Manager *manager);
++int netdev_load(Manager *manager, bool reload);
+ void netdev_drop(NetDev *netdev);
+ 
+ NetDev *netdev_unref(NetDev *netdev);
+diff -rupN systemd-239/src/network/networkctl.c systemd-239-network-reload/src/network/networkctl.c
+--- systemd-239/src/network/networkctl.c	2020-02-04 07:02:46.000000000 +0100
++++ systemd-239-network-reload/src/network/networkctl.c	2020-02-16 10:26:01.885216246 +0100
+@@ -5,6 +5,7 @@
+ #include <net/if.h>
+ #include <stdbool.h>
+ 
++#include "sd-bus.h"
+ #include "sd-device.h"
+ #include "sd-hwdb.h"
+ #include "sd-lldp.h"
+@@ -13,6 +14,9 @@
+ 
+ #include "alloc-util.h"
+ #include "arphrd-list.h"
++#include "bus-common-errors.h"
++#include "bus-error.h"
++#include "bus-util.h"
+ #include "device-util.h"
+ #include "ether-addr-util.h"
+ #include "fd-util.h"
+@@ -23,6 +27,7 @@
+ #include "netlink-util.h"
+ #include "pager.h"
+ #include "parse-util.h"
++#include "set.h"
+ #include "socket-util.h"
+ #include "sparse-endian.h"
+ #include "stdio-util.h"
+@@ -1080,6 +1085,76 @@ static int link_lldp_status(int argc, ch
+         return 0;
+ }
+ 
++static int verb_reload(int argc, char *argv[], void *userdata) {
++        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
++        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
++        int r;
++
++        r = sd_bus_open_system(&bus);
++        if (r < 0)
++                return log_error_errno(r, "Failed to connect system bus: %m");
++
++        r = sd_bus_call_method(
++                        bus,
++                        "org.freedesktop.network1",
++                        "/org/freedesktop/network1",
++                        "org.freedesktop.network1.Manager",
++                        "Reload",
++                        &error, NULL, NULL);
++        if (r < 0)
++                return log_error_errno(r, "Failed to reload network settings: %m");
++
++        return 0;
++}
++
++static int verb_reconfigure(int argc, char *argv[], void *userdata) {
++        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
++        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
++        _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
++        _cleanup_set_free_ Set *indexes = NULL;
++        int index, i, r;
++        Iterator j;
++        void *p;
++
++        r = sd_bus_open_system(&bus);
++        if (r < 0)
++                return log_error_errno(r, "Failed to connect system bus: %m");
++
++        indexes = set_new(NULL);
++        if (!indexes)
++                return log_oom();
++
++        for (i = 1; i < argc; i++) {
++                r = parse_ifindex(argv[i], &index);
++                if (r < 0)
++                        return log_error_errno(r, "Failed to resolve interface %s", argv[i]);
++
++                r = set_put(indexes, INT_TO_PTR(index));
++                if (r < 0)
++                        return log_oom();
++        }
++
++        SET_FOREACH(p, indexes, j) {
++                index = PTR_TO_INT(p);
++                r = sd_bus_call_method(
++                                bus,
++                                "org.freedesktop.network1",
++                                "/org/freedesktop/network1",
++                                "org.freedesktop.network1.Manager",
++                                "ReconfigureLink",
++                                &error, NULL, "i", index);
++                if (r < 0) {
++                        char ifname[IF_NAMESIZE + 1];
++
++                        if_indextoname(index, ifname);
++                        return log_error_errno(r, "Failed to reconfigure network interface %s: %m",
++                                               ifname);
++                }
++        }
++
++        return 0;
++}
++
+ static void help(void) {
+         printf("%s [OPTIONS...]\n\n"
+                "Query and control the networking subsystem.\n\n"
+@@ -1093,6 +1168,8 @@ static void help(void) {
+                "  status [LINK...]      Show link status\n"
+                "  lldp [LINK...]        Show LLDP neighbors\n"
+                "  label                 Show current address label entries in the kernel\n"
++               "  reconfigure DEVICES... Reconfigure interfaces\n"
++               "  reload                 Reload .network and .netdev files\n"
+                , program_invocation_short_name);
+ }
+ 
+@@ -1154,10 +1231,12 @@ static int parse_argv(int argc, char *ar
+ 
+ static int networkctl_main(int argc, char *argv[]) {
+         static const Verb verbs[] = {
+-                { "list",   VERB_ANY, VERB_ANY, VERB_DEFAULT, list_links          },
+-                { "status", VERB_ANY, VERB_ANY, 0,            link_status         },
+-                { "lldp",   VERB_ANY, VERB_ANY, 0,            link_lldp_status    },
+-                { "label",  VERB_ANY, VERB_ANY, 0,            list_address_labels },
++                { "list",   VERB_ANY, VERB_ANY, VERB_DEFAULT, list_links            },
++                { "status", VERB_ANY, VERB_ANY, 0,            link_status           },
++                { "lldp",   VERB_ANY, VERB_ANY, 0,            link_lldp_status      },
++                { "label",  VERB_ANY, VERB_ANY, 0,            list_address_labels   },
++                { "reconfigure", 2,   VERB_ANY, 0,            verb_reconfigure      },
++                { "reload",      1,   1,        0,            verb_reload           },
+                 {}
+         };
+ 
+diff -rupN systemd-239/src/network/networkd-address-pool.c systemd-239-network-reload/src/network/networkd-address-pool.c
+--- systemd-239/src/network/networkd-address-pool.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-address-pool.c	2020-02-12 11:39:13.000000000 +0100
+@@ -102,7 +102,7 @@ static bool address_pool_prefix_is_taken
+         }
+ 
+         /* And don't clash with configured but un-assigned addresses either */
+-        LIST_FOREACH(networks, n, p->manager->networks) {
++        ORDERED_HASHMAP_FOREACH(n, p->manager->networks, i) {
+                 Address *a;
+ 
+                 LIST_FOREACH(addresses, a, n->static_addresses) {
+diff -rupN systemd-239/src/network/networkd-dhcp6.c systemd-239-network-reload/src/network/networkd-dhcp6.c
+--- systemd-239/src/network/networkd-dhcp6.c	2020-02-04 07:02:47.000000000 +0100
++++ systemd-239-network-reload/src/network/networkd-dhcp6.c	2020-02-12 11:37:20.000000000 +0100
+@@ -103,7 +103,7 @@ static int dhcp6_pd_prefix_assign(Link *
+         return sd_radv_start(radv);
+ }
+ 
+-static Network *dhcp6_reset_pd_prefix_network(Link *link) {
++static OrderedHashmap *dhcp6_reset_pd_prefix_network(Link *link) {
+         assert(link);
+         assert(link->manager);
+         assert(link->manager->networks);
+diff -rupN systemd-239/src/network/networkd-link-bus.c systemd-239-network-reload/src/network/networkd-link-bus.c
+--- systemd-239/src/network/networkd-link-bus.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-link-bus.c	2020-02-15 16:08:27.000000000 +0100
+@@ -1,25 +1,58 @@
+ /* SPDX-License-Identifier: LGPL-2.1+ */
+ 
+ #include "alloc-util.h"
++#include "bus-common-errors.h"
+ #include "bus-util.h"
++#include "dns-domain.h"
++#include "networkd-link-bus.h"
+ #include "networkd-link.h"
+ #include "networkd-manager.h"
+ #include "parse-util.h"
+ #include "strv.h"
++#include "user-util.h"
+ 
+-static BUS_DEFINE_PROPERTY_GET_ENUM(property_get_operational_state, link_operstate, LinkOperationalState);
+-static BUS_DEFINE_PROPERTY_GET_ENUM(property_get_administrative_state, link_state, LinkState);
++BUS_DEFINE_PROPERTY_GET_ENUM(property_get_operational_state, link_operstate, LinkOperationalState);
++
++int bus_link_method_reconfigure(sd_bus_message *message, void *userdata, sd_bus_error *error) {
++        Link *l = userdata;
++        int r;
++
++        assert(message);
++        assert(l);
++
++        r = bus_verify_polkit_async(message, CAP_NET_ADMIN,
++                                    "org.freedesktop.network1.reconfigure",
++                                    NULL, true, UID_INVALID,
++                                    &l->manager->polkit_registry, error);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return 1; /* Polkit will call us back */
++
++        r = link_reconfigure(l);
++        if (r < 0)
++                return r;
++
++        link_set_state(l, LINK_STATE_INITIALIZED);
++        r = link_save(l);
++        if (r < 0)
++                return r;
++        link_clean(l);
++
++        return sd_bus_reply_method_return(message, NULL);
++}
+ 
+ const sd_bus_vtable link_vtable[] = {
+         SD_BUS_VTABLE_START(0),
+ 
+         SD_BUS_PROPERTY("OperationalState", "s", property_get_operational_state, offsetof(Link, operstate), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+-        SD_BUS_PROPERTY("AdministrativeState", "s", property_get_administrative_state, offsetof(Link, state), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
++
++        SD_BUS_METHOD("Reconfigure", NULL, NULL, bus_link_method_reconfigure, SD_BUS_VTABLE_UNPRIVILEGED),
+ 
+         SD_BUS_VTABLE_END
+ };
+ 
+-static char *link_bus_path(Link *link) {
++char *link_bus_path(Link *link) {
+         _cleanup_free_ char *ifindex = NULL;
+         char *p;
+         int r;
+@@ -98,17 +131,15 @@ int link_object_find(sd_bus *bus, const
+         return 1;
+ }
+ 
+-int link_send_changed(Link *link, const char *property, ...) {
++int link_send_changed_strv(Link *link, char **properties) {
+         _cleanup_free_ char *p = NULL;
+-        char **l;
+ 
+         assert(link);
+         assert(link->manager);
++        assert(properties);
+ 
+         if (!link->manager->bus)
+-                return 0; /* replace with assert when we have kdbus */
+-
+-        l = strv_from_stdarg_alloca(property);
++                return 0;
+ 
+         p = link_bus_path(link);
+         if (!p)
+@@ -118,5 +149,13 @@ int link_send_changed(Link *link, const
+                         link->manager->bus,
+                         p,
+                         "org.freedesktop.network1.Link",
+-                        l);
++                        properties);
++}
++
++int link_send_changed(Link *link, const char *property, ...) {
++        char **properties;
++
++        properties = strv_from_stdarg_alloca(property);
++
++        return link_send_changed_strv(link, properties);
+ }
+diff -rupN systemd-239/src/network/networkd-link-bus.h systemd-239-network-reload/src/network/networkd-link-bus.h
+--- systemd-239/src/network/networkd-link-bus.h	1970-01-01 01:00:00.000000000 +0100
++++ systemd-239-network-reload/src/network/networkd-link-bus.h	2020-02-13 09:11:20.000000000 +0100
+@@ -0,0 +1,22 @@
++/* SPDX-License-Identifier: LGPL-2.1+ */
++#pragma once
++
++#include "sd-bus.h"
++
++#include "macro.h"
++
++typedef struct Link Link;
++
++extern const sd_bus_vtable link_vtable[];
++
++char *link_bus_path(Link *link);
++int link_node_enumerator(sd_bus *bus, const char *path, void *userdata, char ***nodes, sd_bus_error *error);
++int link_object_find(sd_bus *bus, const char *path, const char *interface, void *userdata, void **found, sd_bus_error *error);
++int link_send_changed_strv(Link *link, char **properties);
++int link_send_changed(Link *link, const char *property, ...) _sentinel_;
++
++int property_get_operational_state(sd_bus *bus, const char *path, const char *interface, const char *property, sd_bus_message *reply, void *userdata, sd_bus_error *error);
++int property_get_carrier_state(sd_bus *bus, const char *path, const char *interface, const char *property, sd_bus_message *reply, void *userdata, sd_bus_error *error);
++int property_get_address_state(sd_bus *bus, const char *path, const char *interface, const char *property, sd_bus_message *reply, void *userdata, sd_bus_error *error);
++
++int bus_link_method_reconfigure(sd_bus_message *message, void *userdata, sd_bus_error *error);
+diff -rupN systemd-239/src/network/networkd-link.c systemd-239-network-reload/src/network/networkd-link.c
+--- systemd-239/src/network/networkd-link.c	2020-02-04 07:02:47.000000000 +0100
++++ systemd-239-network-reload/src/network/networkd-link.c	2020-02-15 16:09:35.000000000 +0100
+@@ -16,6 +16,7 @@
+ #include "network-internal.h"
+ #include "networkd-ipv6-proxy-ndp.h"
+ #include "networkd-lldp-tx.h"
++#include "networkd-link-bus.h"
+ #include "networkd-manager.h"
+ #include "networkd-ndisc.h"
+ #include "networkd-radv.h"
+@@ -521,6 +522,25 @@ static int link_new(Manager *manager, sd
+         return 0;
+ }
+ 
++static void link_free_engines(Link *link) {
++        if (!link)
++                return;
++
++        link->dhcp_server = sd_dhcp_server_unref(link->dhcp_server);
++        link->dhcp_client = sd_dhcp_client_unref(link->dhcp_client);
++        link->dhcp_lease = sd_dhcp_lease_unref(link->dhcp_lease);
++
++        link->lldp = sd_lldp_unref(link->lldp);
++        free(link->lldp_file);
++
++        ndisc_flush(link);
++
++        link->ipv4ll = sd_ipv4ll_unref(link->ipv4ll);
++        link->dhcp6_client = sd_dhcp6_client_unref(link->dhcp6_client);
++        link->ndisc = sd_ndisc_unref(link->ndisc);
++        link->radv = sd_radv_unref(link->radv);
++}
++
+ static void link_free(Link *link) {
+         Address *address;
+         Link *carrier;
+@@ -543,28 +563,14 @@ static void link_free(Link *link) {
+                 LIST_REMOVE(addresses, link->pool_addresses, address);
+                 address_free(address);
+         }
+-
+-        sd_dhcp_server_unref(link->dhcp_server);
+-        sd_dhcp_client_unref(link->dhcp_client);
+-        sd_dhcp_lease_unref(link->dhcp_lease);
+-        sd_dhcp6_lease_unref(link->dhcp6_lease);
+-
+-        link_lldp_emit_stop(link);
++    
++  	link_lldp_emit_stop(link);
++        link_free_engines(link);
+ 
+         free(link->lease_file);
+         free(link->lease6_file);
+-
+-        sd_lldp_unref(link->lldp);
+-        free(link->lldp_file);
+-
+-        ndisc_flush(link);
+-
+-        sd_ipv4ll_unref(link->ipv4ll);
+-        sd_dhcp6_client_unref(link->dhcp6_client);
+-        sd_ndisc_unref(link->ndisc);
+-        sd_radv_unref(link->radv);
+-
+-        if (link->manager)
++	
++	if (link->manager)
+                 hashmap_remove(link->manager->links, INT_TO_PTR(link->ifindex));
+ 
+         free(link->ifname);
+@@ -630,7 +636,7 @@ int link_get(Manager *m, int ifindex, Li
+         return 0;
+ }
+ 
+-static void link_set_state(Link *link, LinkState state) {
++void link_set_state(Link *link, LinkState state) {
+         assert(link);
+ 
+         if (link->state == state)
+@@ -740,7 +746,7 @@ static void link_enter_configured(Link *
+         assert(link);
+         assert(link->network);
+ 
+-        if (link->state != LINK_STATE_SETTING_ROUTES)
++        if (link->state != LINK_STATE_CONFIGURING)
+                 return;
+ 
+         log_link_info(link, "Configured");
+@@ -842,9 +848,8 @@ static int route_handler(sd_netlink *rtn
+         int r;
+ 
+         assert(link->route_messages > 0);
+-        assert(IN_SET(link->state, LINK_STATE_SETTING_ADDRESSES,
+-                      LINK_STATE_SETTING_ROUTES, LINK_STATE_FAILED,
+-                      LINK_STATE_LINGER));
++        assert(IN_SET(link->state, LINK_STATE_CONFIGURING,
++                      LINK_STATE_FAILED, LINK_STATE_LINGER));
+ 
+         link->route_messages--;
+ 
+@@ -870,12 +875,10 @@ static int link_enter_set_routes(Link *l
+ 
+         assert(link);
+         assert(link->network);
+-        assert(link->state == LINK_STATE_SETTING_ADDRESSES);
++        assert(link->state != _LINK_STATE_INVALID);
+ 
+         (void) link_set_routing_policy_rule(link);
+ 
+-        link_set_state(link, LINK_STATE_SETTING_ROUTES);
+-
+         LIST_FOREACH(routes, rt, link->network->static_routes) {
+                 r = route_configure(rt, link, route_handler);
+                 if (r < 0) {
+@@ -905,7 +908,7 @@ int link_route_remove_handler(sd_netlink
+         assert(link);
+         assert(link->ifname);
+ 
+-        if (IN_SET(link->state, LINK_STATE_FAILED, LINK_STATE_LINGER))
++        if (IN_SET(link->state, LINK_STATE_CONFIGURING, LINK_STATE_FAILED, LINK_STATE_LINGER))
+                 return 1;
+ 
+         r = sd_netlink_message_get_errno(m);
+@@ -924,7 +927,7 @@ static int address_handler(sd_netlink *r
+         assert(link);
+         assert(link->ifname);
+         assert(link->address_messages > 0);
+-        assert(IN_SET(link->state, LINK_STATE_SETTING_ADDRESSES,
++        assert(IN_SET(link->state, LINK_STATE_CONFIGURING,
+                LINK_STATE_FAILED, LINK_STATE_LINGER));
+ 
+         link->address_messages--;
+@@ -1097,8 +1100,6 @@ static int link_enter_set_addresses(Link
+         if (r < 0)
+                 return r;
+ 
+-        link_set_state(link, LINK_STATE_SETTING_ADDRESSES);
+-
+         LIST_FOREACH(addresses, ad, link->network->static_addresses) {
+                 r = address_configure(ad, link, address_handler, false);
+                 if (r < 0) {
+@@ -2381,11 +2382,12 @@ static int link_enter_join_netdev(Link *
+ 
+         assert(link);
+         assert(link->network);
+-        assert(link->state == LINK_STATE_PENDING);
++        assert(link->state == LINK_STATE_INITIALIZED);
+ 
+-        link_set_state(link, LINK_STATE_ENSLAVING);
++        link_set_state(link, LINK_STATE_CONFIGURING);
+ 
+         link_dirty(link);
++        link->enslaving = 0;
+ 
+         if (!link->network->bridge &&
+             !link->network->bond &&
+@@ -2770,7 +2772,7 @@ static int link_configure(Link *link) {
+ 
+         assert(link);
+         assert(link->network);
+-        assert(link->state == LINK_STATE_PENDING);
++        assert(link->state == LINK_STATE_INITIALIZED);
+ 
+         if (STRPTR_IN_SET(link->kind, "can", "vcan"))
+                 return link_configure_can(link);
+@@ -2910,6 +2912,72 @@ static int link_configure(Link *link) {
+         return link_enter_join_netdev(link);
+ }
+ 
++int link_reconfigure(Link *link) {
++        Network *network;
++        int r;
++
++        if (IN_SET(link->state, LINK_STATE_PENDING, LINK_STATE_LINGER))
++                return 0;
++
++        r = network_get(link->manager, link->udev_device, link->ifname,
++                        &link->mac, &network);
++        if (r == -ENOENT) {
++                link_enter_unmanaged(link);
++                return 0;
++        } else if (r == 0 && network->unmanaged) {
++                link_enter_unmanaged(link);
++                return 0;
++        } else if (r < 0)
++                return r;
++
++        if (link->network == network)
++               return 0;
++
++        log_link_info(link, "Re-configuring with %s", network->filename);
++
++        /* Dropping old .network file */
++        r = link_stop_clients(link);
++        if (r < 0) {
++                link_enter_failed(link);
++                return r;
++        }
++
++        if (link_dhcp4_server_enabled(link))
++                (void) sd_dhcp_server_stop(link->dhcp_server);
++
++        r = link_drop_config(link);
++        if (r < 0)
++                return r;
++
++        if (!IN_SET(link->state, LINK_STATE_UNMANAGED, LINK_STATE_PENDING, LINK_STATE_INITIALIZED)) {
++                log_link_debug(link, "State is %s, dropping config", link_state_to_string(link->state));
++                r = link_drop_foreign_config(link);
++                if (r < 0)
++                        return r;
++        }
++
++        link_free_carrier_maps(link);
++        link_free_engines(link);
++        link->network = network_unref(link->network);
++
++        /* Then, apply new .network file */
++        r = network_apply(network, link);
++        if (r < 0)
++                return r;
++
++        r = link_new_carrier_maps(link);
++        if (r < 0)
++                return r;
++
++        link_set_state(link, LINK_STATE_INITIALIZED);
++
++        r = link_configure(link);
++        if (r < 0)
++                return r;
++
++        return 0;
++}
++
+ static int link_initialized_and_synced(sd_netlink *rtnl, sd_netlink_message *m,
+                                        void *userdata) {
+         _cleanup_(link_unrefp) Link *link = userdata;
+@@ -2920,10 +2988,13 @@ static int link_initialized_and_synced(s
+         assert(link->ifname);
+         assert(link->manager);
+ 
+-        if (link->state != LINK_STATE_PENDING)
+-                return 1;
++        /* We may get called either from the asynchronous netlink callback,
++         * or directly for link_add() if running in a container. See link_add(). */
++        if (!IN_SET(link->state, LINK_STATE_PENDING, LINK_STATE_INITIALIZED))
++                return 0;
+ 
+         log_link_debug(link, "Link state is up-to-date");
++        link_set_state(link, LINK_STATE_INITIALIZED);
+ 
+         r = link_new_bound_by_list(link);
+         if (r < 0)
+@@ -2988,6 +3059,7 @@ int link_initialized(Link *link, struct
+                 return 0;
+ 
+         log_link_debug(link, "udev initialized link");
++        link_set_state(link, LINK_STATE_INITIALIZED);
+ 
+         link->udev_device = udev_device_ref(device);
+ 
+@@ -3267,7 +3339,7 @@ int link_ipv6ll_gained(Link *link, const
+         link->ipv6ll_address = *address;
+         link_check_ready(link);
+ 
+-        if (!IN_SET(link->state, LINK_STATE_PENDING, LINK_STATE_UNMANAGED, LINK_STATE_FAILED)) {
++        if (IN_SET(link->state, LINK_STATE_CONFIGURING, LINK_STATE_CONFIGURED)) {
+                 r = link_acquire_ipv6_conf(link);
+                 if (r < 0) {
+                         link_enter_failed(link);
+@@ -3283,13 +3355,14 @@ static int link_carrier_gained(Link *lin
+ 
+         assert(link);
+ 
+-        if (!IN_SET(link->state, LINK_STATE_PENDING, LINK_STATE_UNMANAGED, LINK_STATE_FAILED)) {
++        if (IN_SET(link->state, LINK_STATE_CONFIGURING, LINK_STATE_CONFIGURED)) {
+                 r = link_acquire_conf(link);
+                 if (r < 0) {
+                         link_enter_failed(link);
+                         return r;
+                 }
+ 
++                link_set_state(link, LINK_STATE_CONFIGURING);
+                 r = link_enter_set_addresses(link);
+                 if (r < 0)
+                         return r;
+@@ -3326,7 +3399,7 @@ static int link_carrier_lost(Link *link)
+         if (r < 0)
+                 return r;
+ 
+-        if (!IN_SET(link->state, LINK_STATE_UNMANAGED, LINK_STATE_PENDING)) {
++        if (!IN_SET(link->state, LINK_STATE_UNMANAGED, LINK_STATE_PENDING, LINK_STATE_INITIALIZED)) {
+                 log_link_debug(link, "State is %s, dropping config", link_state_to_string(link->state));
+                 r = link_drop_foreign_config(link);
+                 if (r < 0)
+@@ -3372,9 +3445,8 @@ int link_update(Link *link, sd_netlink_m
+         assert(m);
+ 
+         if (link->state == LINK_STATE_LINGER) {
+-                link_ref(link);
+-                log_link_info(link, "Link readded");
+-                link_set_state(link, LINK_STATE_ENSLAVING);
++                log_link_info(link, "Link re-added");
++                link_set_state(link, LINK_STATE_CONFIGURING);
+ 
+                 r = link_new_carrier_maps(link);
+                 if (r < 0)
+@@ -3383,20 +3455,14 @@ int link_update(Link *link, sd_netlink_m
+ 
+         r = sd_netlink_message_read_string(m, IFLA_IFNAME, &ifname);
+         if (r >= 0 && !streq(ifname, link->ifname)) {
+-                log_link_info(link, "Interface name change detected, %s has been renamed to %s.", link->ifname, ifname);
++                Manager *manager = link->manager;
+ 
+-                if (link->state == LINK_STATE_PENDING) {
+-                        r = free_and_strdup(&link->ifname, ifname);
+-                        if (r < 0)
+-                                return r;
+-                } else {
+-                        Manager *manager = link->manager;
++                log_link_info(link, "Interface name change detected, %s has been renamed to %s.", link->ifname, ifname);
+ 
+-                        link_drop(link);
+-                        r = link_add(manager, m, &link);
+-                        if (r < 0)
+-                                return r;
+-                }
++                link_drop(link);
++                r = link_add(manager, m, &link);
++                if (r < 0)
++                        return r;
+         }
+ 
+         r = sd_netlink_message_read_u32(m, IFLA_MTU, &mtu);
+@@ -3963,9 +4029,8 @@ void link_clean(Link *link) {
+ 
+ static const char* const link_state_table[_LINK_STATE_MAX] = {
+         [LINK_STATE_PENDING] = "pending",
+-        [LINK_STATE_ENSLAVING] = "configuring",
+-        [LINK_STATE_SETTING_ADDRESSES] = "configuring",
+-        [LINK_STATE_SETTING_ROUTES] = "configuring",
++        [LINK_STATE_INITIALIZED] = "initialized",
++        [LINK_STATE_CONFIGURING] = "configuring",
+         [LINK_STATE_CONFIGURED] = "configured",
+         [LINK_STATE_UNMANAGED] = "unmanaged",
+         [LINK_STATE_FAILED] = "failed",
+diff -rupN systemd-239/src/network/networkd-link.h systemd-239-network-reload/src/network/networkd-link.h
+--- systemd-239/src/network/networkd-link.h	2020-02-04 07:02:47.000000000 +0100
++++ systemd-239-network-reload/src/network/networkd-link.h	2020-02-15 16:07:56.000000000 +0100
+@@ -18,14 +18,13 @@
+ #include "set.h"
+ 
+ typedef enum LinkState {
+-        LINK_STATE_PENDING,
+-        LINK_STATE_ENSLAVING,
+-        LINK_STATE_SETTING_ADDRESSES,
+-        LINK_STATE_SETTING_ROUTES,
+-        LINK_STATE_CONFIGURED,
+-        LINK_STATE_UNMANAGED,
+-        LINK_STATE_FAILED,
+-        LINK_STATE_LINGER,
++        LINK_STATE_PENDING,     /* udev has not initialized the link */
++        LINK_STATE_INITIALIZED, /* udev has initialized the link */
++        LINK_STATE_CONFIGURING, /* configuring addresses, routes, etc. */
++        LINK_STATE_CONFIGURED,  /* everything is configured */
++        LINK_STATE_UNMANAGED,   /* Unmanaged=yes is set */
++        LINK_STATE_FAILED,      /* at least one configuration process failed */
++        LINK_STATE_LINGER,      /* RTM_DELLINK for the link has been received */
+         _LINK_STATE_MAX,
+         _LINK_STATE_INVALID = -1
+ } LinkState;
+@@ -125,7 +124,7 @@ typedef struct Link {
+         Hashmap *bound_by_links;
+         Hashmap *bound_to_links;
+ 
+-	int sysctl_ipv6_enabled;
++        int sysctl_ipv6_enabled;
+ } Link;
+ 
+ Link *link_unref(Link *link);
+@@ -145,6 +144,8 @@ int link_initialized(Link *link, struct
+ 
+ void link_check_ready(Link *link);
+ 
++void link_set_state(Link *link, LinkState state);
++
+ void link_update_operstate(Link *link);
+ int link_update(Link *link, sd_netlink_message *message);
+ 
+@@ -167,17 +168,13 @@ int dhcp6_request_address(Link *link, in
+ 
+ int link_sysctl_ipv6_enabled(Link *link);
+ 
+-const char* link_state_to_string(LinkState s) _const_;
+-LinkState link_state_from_string(const char *s) _pure_;
+-
+ const char* link_operstate_to_string(LinkOperationalState s) _const_;
+ LinkOperationalState link_operstate_from_string(const char *s) _pure_;
+ 
+-extern const sd_bus_vtable link_vtable[];
++const char* link_state_to_string(LinkState s) _const_;
++LinkState link_state_from_string(const char *s) _pure_;
+ 
+-int link_node_enumerator(sd_bus *bus, const char *path, void *userdata, char ***nodes, sd_bus_error *error);
+-int link_object_find(sd_bus *bus, const char *path, const char *interface, void *userdata, void **found, sd_bus_error *error);
+-int link_send_changed(Link *link, const char *property, ...) _sentinel_;
++int link_reconfigure(Link *link);
+ 
+ DEFINE_TRIVIAL_CLEANUP_FUNC(Link*, link_unref);
+ 
+diff -rupN systemd-239/src/network/networkd-manager-bus.c systemd-239-network-reload/src/network/networkd-manager-bus.c
+--- systemd-239/src/network/networkd-manager-bus.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-manager-bus.c	2020-02-15 16:07:35.000000000 +0100
+@@ -1,32 +1,99 @@
+ /* SPDX-License-Identifier: LGPL-2.1+ */
+ 
++#include <net/if.h>
++#include <netinet/in.h>
++#include <sys/capability.h>
++
+ #include "alloc-util.h"
++#include "bus-common-errors.h"
+ #include "bus-util.h"
++#include "networkd-link-bus.h"
++#include "networkd-link.h"
+ #include "networkd-manager.h"
++#include "path-util.h"
++#include "strv.h"
++#include "user-util.h"
++
++static int call_link_method(Manager *m, sd_bus_message *message, sd_bus_message_handler_t handler, sd_bus_error *error) {
++        int ifindex, r;
++        Link *l;
++
++        assert(m);
++        assert(message);
++        assert(handler);
++
++        assert_cc(sizeof(int) == sizeof(int32_t));
++        r = sd_bus_message_read(message, "i", &ifindex);
++        if (r < 0)
++                return r;
++
++        if (ifindex <= 0)
++                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid interface index");
++
++        l = hashmap_get(m->links, INT_TO_PTR(ifindex));
++        if (!l)
++                return sd_bus_error_setf(error, BUS_ERROR_NO_SUCH_LINK, "Link %i not known", ifindex);
++
++        return handler(message, l, error);
++}
++
++static int bus_method_reconfigure_link(sd_bus_message *message, void *userdata, sd_bus_error *error) {
++        return call_link_method(userdata, message, bus_link_method_reconfigure, error);
++}
+ 
+-static BUS_DEFINE_PROPERTY_GET_ENUM(property_get_operational_state, link_operstate, LinkOperationalState);
++static int bus_method_reload(sd_bus_message *message, void *userdata, sd_bus_error *error) {
++        Manager *manager = userdata;
++        Iterator i;
++        Link *link;
++        int r;
++
++        r = bus_verify_polkit_async(message, CAP_NET_ADMIN,
++                                    "org.freedesktop.network1.reload",
++                                    NULL, true, UID_INVALID,
++                                    &manager->polkit_registry, error);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return 1; /* Polkit will call us back */
++
++        r = netdev_load(manager, true);
++        if (r < 0)
++                return r;
++
++        r = network_reload(manager);
++        if (r < 0)
++                return r;
++
++        HASHMAP_FOREACH(link, manager->links, i) {
++                r = link_reconfigure(link);
++                if (r < 0)
++                        return r;
++        }
++
++        return sd_bus_reply_method_return(message, NULL);
++}
+ 
+ const sd_bus_vtable manager_vtable[] = {
+         SD_BUS_VTABLE_START(0),
+ 
+         SD_BUS_PROPERTY("OperationalState", "s", property_get_operational_state, offsetof(Manager, operational_state), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+ 
++        SD_BUS_METHOD("ReconfigureLink", "i", NULL, bus_method_reconfigure_link, SD_BUS_VTABLE_UNPRIVILEGED),
++        SD_BUS_METHOD("Reload", NULL, NULL, bus_method_reload, SD_BUS_VTABLE_UNPRIVILEGED),
++
+         SD_BUS_VTABLE_END
+ };
+ 
+-int manager_send_changed(Manager *manager, const char *property, ...) {
+-        char **l;
+-
++int manager_send_changed_strv(Manager *manager, char **properties) {
+         assert(manager);
++        assert(properties);
+ 
+         if (!manager->bus)
+-                return 0; /* replace by assert when we have kdbus */
+-
+-        l = strv_from_stdarg_alloca(property);
++                return 0;
+ 
+         return sd_bus_emit_properties_changed_strv(
+                         manager->bus,
+                         "/org/freedesktop/network1",
+                         "org.freedesktop.network1.Manager",
+-                        l);
++                        properties);
+ }
+diff -rupN systemd-239/src/network/networkd-manager.c systemd-239-network-reload/src/network/networkd-manager.c
+--- systemd-239/src/network/networkd-manager.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-manager.c	2020-02-13 10:48:44.000000000 +0100
+@@ -16,6 +16,7 @@
+ #include "fd-util.h"
+ #include "fileio.h"
+ #include "libudev-private.h"
++#include "networkd-link-bus.h"
+ #include "local-addresses.h"
+ #include "netlink-util.h"
+ #include "networkd-manager.h"
+@@ -1055,6 +1056,7 @@ static void print_string_set(FILE *f, co
+ 
+ static int manager_save(Manager *m) {
+         _cleanup_ordered_set_free_free_ OrderedSet *dns = NULL, *ntp = NULL, *search_domains = NULL, *route_domains = NULL;
++	_cleanup_strv_free_ char **p = NULL;
+         Link *link;
+         Iterator i;
+         _cleanup_free_ char *temp_path = NULL;
+@@ -1193,9 +1195,14 @@ static int manager_save(Manager *m) {
+                 goto fail;
+         }
+ 
+-        if (m->operational_state != operstate) {
++	if (m->operational_state != operstate) {
+                 m->operational_state = operstate;
+-                r = manager_send_changed(m, "OperationalState", NULL);
++                if (strv_extend(&p, "OperationalState") < 0)
++                        log_oom();
++        }
++
++        if (p) {
++                r = manager_send_changed_strv(m, p);
+                 if (r < 0)
+                         log_error_errno(r, "Could not emit changed OperationalState: %m");
+         }
+@@ -1442,8 +1449,7 @@ void manager_free(Manager *m) {
+ 
+         free(m->state_file);
+ 
+-        while ((network = m->networks))
+-                network_free(network);
++        m->networks = ordered_hashmap_free_with_destructor(m->networks, network_unref);
+ 
+         while ((link = hashmap_first(m->dhcp6_prefixes)))
+                 link_unref(link);
+@@ -1453,8 +1459,6 @@ void manager_free(Manager *m) {
+                 link_unref(link);
+         hashmap_free(m->links);
+ 
+-        hashmap_free(m->networks_by_name);
+-
+         while ((netdev = hashmap_first(m->netdevs)))
+                 netdev_unref(netdev);
+         hashmap_free(m->netdevs);
+@@ -1509,11 +1513,11 @@ int manager_load_config(Manager *m) {
+         /* update timestamp */
+         paths_check_timestamp(network_dirs, &m->network_dirs_ts_usec, true);
+ 
+-        r = netdev_load(m);
++        r = netdev_load(m, false);
+         if (r < 0)
+                 return r;
+ 
+-        r = network_load(m);
++        r = network_load(m, &m->networks);
+         if (r < 0)
+                 return r;
+ 
+diff -rupN systemd-239/src/network/networkd-manager.h systemd-239-network-reload/src/network/networkd-manager.h
+--- systemd-239/src/network/networkd-manager.h	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-manager.h	2020-02-16 10:23:03.998808252 +0100
+@@ -31,6 +31,7 @@ struct Manager {
+         sd_bus_slot *connected_slot;
+         struct udev *udev;
+         struct udev_monitor *udev_monitor;
++        Hashmap *polkit_registry;
+         sd_event_source *udev_event_source;
+ 
+         bool enumerating:1;
+@@ -43,9 +44,8 @@ struct Manager {
+ 
+         Hashmap *links;
+         Hashmap *netdevs;
+-        Hashmap *networks_by_name;
++        OrderedHashmap *networks;
+         Hashmap *dhcp6_prefixes;
+-        LIST_HEAD(Network, networks);
+         LIST_HEAD(AddressPool, address_pools);
+ 
+         usec_t network_dirs_ts_usec;
+@@ -67,6 +67,7 @@ static inline const DUID* link_duid(cons
+ }
+ 
+ extern const sd_bus_vtable manager_vtable[];
++int manager_send_changed_strv(Manager *manager, char **properties);
+ 
+ int manager_new(Manager **ret, sd_event *event);
+ void manager_free(Manager *m);
+diff -rupN systemd-239/src/network/networkd-network-bus.c systemd-239-network-reload/src/network/networkd-network-bus.c
+--- systemd-239/src/network/networkd-network-bus.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-network-bus.c	2020-02-16 10:35:39.833603503 +0100
+@@ -87,6 +87,7 @@ int network_node_enumerator(sd_bus *bus,
+         _cleanup_strv_free_ char **l = NULL;
+         Manager *m = userdata;
+         Network *network;
++        Iterator i;
+         int r;
+ 
+         assert(bus);
+@@ -94,7 +95,7 @@ int network_node_enumerator(sd_bus *bus,
+         assert(m);
+         assert(nodes);
+ 
+-        LIST_FOREACH(networks, network, m->networks) {
++        ORDERED_HASHMAP_FOREACH(network, m->networks, i) {
+                 char *p;
+ 
+                 p = network_bus_path(network);
+diff -rupN systemd-239/src/network/networkd-network.c systemd-239-network-reload/src/network/networkd-network.c
+--- systemd-239/src/network/networkd-network.c	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-network.c	2020-02-16 10:24:19.367776437 +0100
+@@ -103,8 +103,8 @@ void network_apply_anonymize_if_set(Netw
+         network->dhcp_use_timezone = false;
+ }
+ 
+-static int network_load_one(Manager *manager, const char *filename) {
+-        _cleanup_(network_freep) Network *network = NULL;
++int network_load_one(Manager *manager, OrderedHashmap **networks, const char *filename) {
++        _cleanup_(network_unrefp) Network *network = NULL;
+         _cleanup_fclose_ FILE *file = NULL;
+         char *d;
+         const char *dropin_dirname;
+@@ -186,6 +186,7 @@ static int network_load_one(Manager *man
+ 
+         *d = '\0';
+ 
++        network->n_ref = 1;
+         network->required_for_online = true;
+         network->dhcp = ADDRESS_FAMILY_NO;
+         network->dhcp_use_ntp = true;
+@@ -277,17 +278,20 @@ static int network_load_one(Manager *man
+ 
+         network_apply_anonymize_if_set(network);
+ 
++        struct stat stats;
++        if (stat(filename, &stats) < 0)
++                return -errno;
++        network->timestamp = timespec_load(&stats.st_mtim);
++
+         /* IPMasquerade=yes implies IPForward=yes */
+         if (network->ip_masquerade)
+                 network->ip_forward |= ADDRESS_FAMILY_IPV4;
+ 
+-        LIST_PREPEND(networks, manager->networks, network);
+-
+-        r = hashmap_ensure_allocated(&manager->networks_by_name, &string_hash_ops);
++        r = ordered_hashmap_ensure_allocated(networks, &string_hash_ops);
+         if (r < 0)
+                 return r;
+ 
+-        r = hashmap_put(manager->networks_by_name, network->name, network);
++        r = ordered_hashmap_put(*networks, network->name, network);
+         if (r < 0)
+                 return r;
+ 
+@@ -312,31 +316,72 @@ static int network_load_one(Manager *man
+         return 0;
+ }
+ 
+-int network_load(Manager *manager) {
+-        Network *network;
++int network_load(Manager *manager, OrderedHashmap **networks) {
+         _cleanup_strv_free_ char **files = NULL;
++        Network *network;
+         char **f;
+         int r;
+ 
+         assert(manager);
+ 
+-        while ((network = manager->networks))
+-                network_free(network);
++        ordered_hashmap_clear_with_destructor(*networks, network_unref);
+ 
+-        r = conf_files_list_strv(&files, ".network", NULL, 0, network_dirs);
++        r = conf_files_list_strv(&files, ".network", NULL, 0, NETWORK_DIRS);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to enumerate network files: %m");
+ 
+-        STRV_FOREACH_BACKWARDS(f, files) {
+-                r = network_load_one(manager, *f);
++        STRV_FOREACH(f, files) {
++                r = network_load_one(manager, networks, *f);
+                 if (r < 0)
+-                        return r;
++                        log_error_errno(r, "Failed to load %s, ignoring: %m", *f);
+         }
+ 
+         return 0;
+ }
+ 
+-void network_free(Network *network) {
++int network_reload(Manager *manager) {
++        OrderedHashmap *new_networks = NULL;
++        Network *n, *old;
++        Iterator i;
++        int r;
++
++        assert(manager);
++
++        r = network_load(manager, &new_networks);
++        if (r < 0)
++                goto failure;
++
++        ORDERED_HASHMAP_FOREACH(n, new_networks, i) {
++                r = network_get_by_name(manager, n->name, &old);
++                if (r < 0)
++                        continue; /* The .network file is new. */
++
++                if (n->timestamp != old->timestamp)
++                        continue; /* The .network file is modified. */
++
++                if (!streq(n->filename, old->filename))
++                        continue;
++
++                r = ordered_hashmap_replace(new_networks, old->name, old);
++                if (r < 0)
++                        goto failure;
++
++                network_ref(old);
++                network_unref(n);
++        }
++
++        ordered_hashmap_free_with_destructor(manager->networks, network_unref);
++        manager->networks = new_networks;
++
++        return 0;
++
++failure:
++        ordered_hashmap_free_with_destructor(new_networks, network_unref);
++
++        return r;
++}
++
++static Network *network_free(Network *network) {
+         IPv6ProxyNDPAddress *ipv6_proxy_ndp_address;
+         RoutingPolicyRule *rule;
+         FdbEntry *fdb_entry;
+@@ -348,7 +393,7 @@ void network_free(Network *network) {
+         Iterator i;
+ 
+         if (!network)
+-                return;
++                return NULL;
+ 
+         free(network->filename);
+ 
+@@ -409,14 +454,6 @@ void network_free(Network *network) {
+         hashmap_free(network->prefixes_by_section);
+         hashmap_free(network->rules_by_section);
+ 
+-        if (network->manager) {
+-                if (network->manager->networks)
+-                        LIST_REMOVE(networks, network->manager->networks, network);
+-
+-                if (network->manager->networks_by_name)
+-                        hashmap_remove(network->manager->networks_by_name, network->name);
+-        }
+-
+         free(network->name);
+ 
+         condition_free_list(network->match_host);
+@@ -431,9 +468,11 @@ void network_free(Network *network) {
+ 
+         set_free_free(network->dnssec_negative_trust_anchors);
+ 
+-        free(network);
++        return mfree(network);
+ }
+ 
++DEFINE_TRIVIAL_REF_UNREF_FUNC(Network, network, network_free);
++
+ int network_get_by_name(Manager *manager, const char *name, Network **ret) {
+         Network *network;
+ 
+@@ -441,7 +480,7 @@ int network_get_by_name(Manager *manager
+         assert(name);
+         assert(ret);
+ 
+-        network = hashmap_get(manager->networks_by_name, name);
++        network = ordered_hashmap_get(manager->networks, name);
+         if (!network)
+                 return -ENOENT;
+ 
+@@ -456,6 +495,7 @@ int network_get(Manager *manager, struct
+         Network *network;
+         struct udev_device *parent;
+         const char *path = NULL, *parent_driver = NULL, *driver = NULL, *devtype = NULL;
++        Iterator i;
+ 
+         assert(manager);
+         assert(ret);
+@@ -472,7 +512,7 @@ int network_get(Manager *manager, struct
+                 devtype = udev_device_get_devtype(device);
+         }
+ 
+-        LIST_FOREACH(networks, network, manager->networks) {
++        ORDERED_HASHMAP_FOREACH(network, manager->networks, i) {
+                 if (net_match_config(network->match_mac, network->match_path,
+                                      network->match_driver, network->match_type,
+                                      network->match_name, network->match_host,
+@@ -512,7 +552,7 @@ int network_apply(Network *network, Link
+         assert(network);
+         assert(link);
+ 
+-        link->network = network;
++        link->network = network_ref(network);
+ 
+         if (network->ipv4ll_route) {
+                 Route *route;
+diff -rupN systemd-239/src/network/networkd-network.h systemd-239-network-reload/src/network/networkd-network.h
+--- systemd-239/src/network/networkd-network.h	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/networkd-network.h	2020-02-15 11:44:23.000000000 +0100
+@@ -97,6 +97,9 @@ struct Network {
+ 
+         char *filename;
+         char *name;
++        usec_t timestamp;
++
++        unsigned n_ref;
+ 
+         Set *match_mac;
+         char **match_path;
+@@ -258,15 +261,15 @@ struct Network {
+         DnssecMode dnssec_mode;
+         DnsOverTlsMode dns_over_tls_mode;
+         Set *dnssec_negative_trust_anchors;
+-
+-        LIST_FIELDS(Network, networks);
+ };
+ 
+-void network_free(Network *network);
+-
+-DEFINE_TRIVIAL_CLEANUP_FUNC(Network*, network_free);
+-
+-int network_load(Manager *manager);
++Network *network_ref(Network *network);
++Network *network_unref(Network *network);
++DEFINE_TRIVIAL_CLEANUP_FUNC(Network*, network_unref);
++
++int network_load(Manager *manager, OrderedHashmap **networks);
++int network_reload(Manager *manager);
++int network_load_one(Manager *manager, OrderedHashmap **networks, const char *filename);
+ 
+ int network_get_by_name(Manager *manager, const char *name, Network **ret);
+ int network_get(Manager *manager, struct udev_device *device, const char *ifname, const struct ether_addr *mac, Network **ret);
+diff -rupN systemd-239/src/network/org.freedesktop.network1.conf systemd-239-network-reload/src/network/org.freedesktop.network1.conf
+--- systemd-239/src/network/org.freedesktop.network1.conf	2018-06-22 13:11:49.000000000 +0200
++++ systemd-239-network-reload/src/network/org.freedesktop.network1.conf	2020-02-15 16:17:45.827969888 +0100
+@@ -20,22 +20,7 @@
+         </policy>
+ 
+         <policy context="default">
+-                <deny send_destination="org.freedesktop.network1"/>
+-
+-                <allow send_destination="org.freedesktop.network1"
+-                       send_interface="org.freedesktop.DBus.Introspectable"/>
+-
+-                <allow send_destination="org.freedesktop.network1"
+-                       send_interface="org.freedesktop.DBus.Peer"/>
+-
+-                <allow send_destination="org.freedesktop.network1"
+-                       send_interface="org.freedesktop.DBus.Properties"
+-                       send_member="Get"/>
+-
+-                <allow send_destination="org.freedesktop.network1"
+-                       send_interface="org.freedesktop.DBus.Properties"
+-                       send_member="GetAll"/>
+-
++                <allow send_destination="org.freedesktop.network1"/>
+                 <allow receive_sender="org.freedesktop.network1"/>
+         </policy>
+ 
+diff -rupN systemd-239/src/network/org.freedesktop.network1.policy systemd-239-network-reload/src/network/org.freedesktop.network1.policy
+--- systemd-239/src/network/org.freedesktop.network1.policy	1970-01-01 01:00:00.000000000 +0100
++++ systemd-239-network-reload/src/network/org.freedesktop.network1.policy	2020-02-08 12:51:18.000000000 +0100
+@@ -0,0 +1,43 @@
++<?xml version="1.0" encoding="UTF-8"?> <!--*-nxml-*-->
++<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
++        "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
++
++<!--
++  SPDX-License-Identifier: LGPL-2.1+
++
++  This file is part of systemd.
++
++  systemd is free software; you can redistribute it and/or modify it
++  under the terms of the GNU Lesser General Public License as published by
++  the Free Software Foundation; either version 2.1 of the License, or
++  (at your option) any later version.
++-->
++
++<policyconfig>
++
++        <vendor>The systemd Project</vendor>
++        <vendor_url>http://www.freedesktop.org/wiki/Software/systemd</vendor_url>
++
++        <action id="org.freedesktop.network1.reload">
++                <description gettext-domain="systemd">Reload network settings</description>
++                <message gettext-domain="systemd">Authentication is required to reload network settings.</message>
++                <defaults>
++                        <allow_any>auth_admin</allow_any>
++                        <allow_inactive>auth_admin</allow_inactive>
++                        <allow_active>auth_admin_keep</allow_active>
++                </defaults>
++                <annotate key="org.freedesktop.policykit.owner">unix-user:systemd-network</annotate>
++        </action>
++
++        <action id="org.freedesktop.network1.reconfigure">
++                <description gettext-domain="systemd">Reconfigure network interface</description>
++                <message gettext-domain="systemd">Authentication is required to reconfigure network interface.</message>
++                <defaults>
++                        <allow_any>auth_admin</allow_any>
++                        <allow_inactive>auth_admin</allow_inactive>
++                        <allow_active>auth_admin_keep</allow_active>
++                </defaults>
++                <annotate key="org.freedesktop.policykit.owner">unix-user:systemd-network</annotate>
++        </action>
++
++</policyconfig>

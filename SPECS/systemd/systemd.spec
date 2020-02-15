@@ -1,7 +1,7 @@
 Summary:          Systemd-239
 Name:             systemd
 Version:          239
-Release:          18%{?dist}
+Release:          19%{?dist}
 License:          LGPLv2+ and GPLv2+ and MIT
 URL:              http://www.freedesktop.org/wiki/Software/systemd/
 Group:            System Environment/Security
@@ -37,6 +37,7 @@ Patch17:          systemd-239-CVE-2019-15718.patch
 Patch18:          systemd-239-bz-2471962.patch
 Patch19:          systemd-239-issue-962.patch
 Patch20:          systemd-239-CVE-2019-20386.patch
+Patch21:          networkctl-reload.patch
 
 Requires:         Linux-PAM
 Requires:         libcap
@@ -113,6 +114,7 @@ EOF
 %patch18 -p1
 %patch19 -p1
 %patch20 -p1
+%patch21 -p1
 
 sed -i "s#\#DefaultTasksMax=512#DefaultTasksMax=infinity#g" src/core/system.conf.in
 
@@ -279,6 +281,8 @@ rm -rf %{buildroot}/*
 %files lang -f %{name}.lang
 
 %changelog
+*    Sat Feb 15 2020 Susant Sahani <ssahani@vmware.com>  239-19
+-    Backport network reload and reconfigure
 *    Tue Feb 04 2020 Susant Sahani <ssahani@vmware.com>  239-18
 -    Fix CVE-2019-20386
 *    Thu  Jan 02 2020 Susant Sahani <ssahani@vmware.com>  239-17
